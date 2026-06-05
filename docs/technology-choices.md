@@ -36,11 +36,15 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
 - **Considerations:** direct cloud changes vs. reviewed change requests; self-hosted vs.
   hosted Git; where approval gating and the pipeline live.
 - **Choice:** Git hosted on **GitHub**. Changes are **pull requests**; automation runs in
-  **GitHub Actions**; applies are gated by **GitHub Environments**; approval authority is
-  set by **GitHub organization team** membership.
+  **GitHub Actions**; applies are gated by **GitHub Environments**. Approval authority is a
+  single **defined list of approved SRE GitHub users** — the same list gates
+  infrastructure-change pull requests and staging/production deployments (dev is
+  self-service).
 - **Rationale:** one platform for source of truth, review, pipeline, and approval gating;
-  native required-reviewer controls satisfy "no auto-apply"; team membership is an
-  existing, auditable authority model.
+  native required-reviewer controls satisfy "no auto-apply". A single named approver list
+  is the simplest model that is auditable and meets the need at this scale — a finer
+  team/path split (separating security-policy from infrastructure authority) can be added
+  later if the team or audit needs grow.
 
 ## TC-3: Keyless cloud authentication
 
@@ -171,3 +175,17 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
   accessed with **Workload Identity**.
 - **Rationale:** one audited path; secrets are never baked into images or committed;
   per-workload identity scopes access.
+
+## TC-14: Cost visibility
+
+- **Requirement:** Operators need to see resource usage and cost broken down by cluster
+  and by namespace, without building a cost feature into the console.
+- **Considerations:** build cost views into the console; rely on GKE's native cost
+  tooling; query the Cloud Billing BigQuery export directly.
+- **Choice:** Enable **GKE Cost Allocation** and apply standard resource labels
+  (environment / purpose / cluster) at build. Usage and cost by cluster and by namespace
+  are viewed through GKE/Cloud Billing's native interface (the **Cost breakdown** report
+  and the BigQuery billing export). **Not** built into the console.
+- **Rationale:** GKE Cost Allocation already attributes cost by cluster and by namespace,
+  so a console cost view would duplicate native tooling for no gain. Keeps the console
+  focused on infrastructure and namespace/quota, and keeps cost out of the build scope.
