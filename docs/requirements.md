@@ -265,9 +265,12 @@ directly. The console is used only for infrastructure changes and namespace/quot
 
 ## 8. Open questions
 
-1. **Secrets and TLS certificates** — the approach is under active discussion; it will
-   refine WLD-2, WLD-4, and technology choices
-   [TC-7](technology-choices.md#tc-7-tls-certificates) and
-   [TC-13](technology-choices.md#tc-13-workload-secrets).
+1. **Service-to-service TLS (mutual TLS) and a service mesh** — all communication must be
+   TLS (a firm requirement; see [security-requirements.md](security-requirements.md)
+   SEC-10). The *mechanism* for enforcing east-west mutual TLS — a managed service mesh
+   (leading candidate) or another approach — is **open**, and will also settle the
+   internal-certificate approach
+   ([TC-7](technology-choices.md#tc-7-tls-certificates)). *(Workload secrets are
+   settled — WLD-4, [TC-13](technology-choices.md#tc-13-workload-and-platform-secrets).)*
 2. **Namespace security stamp specifics** — external egress model and quota sizing
    (tracked in [security-requirements.md](security-requirements.md)).

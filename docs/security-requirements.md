@@ -11,7 +11,8 @@ Every cluster is hardened during the build to one standard, and a baseline repor
 produced. From then on it is continuously reconciled to its committed security, scanned
 on a schedule, and alerted on when something drifts or a check goes silent. All evidence
 is archived and tamper-evident. The same standard applies to every cluster and every
-namespace.
+namespace. Secrets are managed centrally and never committed, and all communication is
+encrypted in transit.
 
 ---
 
@@ -66,6 +67,19 @@ namespace.
 - **SEC-8 — Alert on anomalies and on silence.** Anomalies (corrected drift, benchmark
   regressions) raise a **Slack** alert; so does a silence — unhealthy enforcement or a
   scheduled scan that fails to run.
+- **SEC-9 — Secret management.** Secrets are never baked into container images, committed
+  to Git, or left as long-lived plaintext. Workloads read secrets from a managed secrets
+  service through per-workload identity, **mounted at runtime rather than held as standing
+  Kubernetes Secret objects by default**. Git holds only *references* to secrets; the
+  values live in the managed secrets service, encrypted with a customer-managed encryption
+  key (CMEK). Platform and automation credentials — for example the console's GitHub App
+  key and the alerting webhook — are stored the same way and read via workload identity,
+  never hard-coded or logged. (How: [technology-choices.md](technology-choices.md) TC-13
+  and TC-2.)
+- **SEC-10 — Encryption in transit.** All communication is encrypted with **Transport
+  Layer Security (TLS)** — at the public edge, from the edge into the cluster, and
+  service-to-service. No plaintext on the wire. The *mechanism* for enforcing
+  service-to-service mutual TLS is an open technology choice (see open questions).
 
 ---
 
@@ -94,3 +108,8 @@ the *contents* below are proposals to confirm.
    provenance/SLSA, trusted registry path, image freshness, vulnerability threshold),
    vulnerability scanning via Artifact Analysis, and the dev (audit) vs. staging/production
    (enforce) split. Pairs with WLD-3 in [requirements.md](requirements.md).
+4. **Service-to-service mutual TLS mechanism (SEC-10).** All communication must be TLS
+   (firm); *how* east-west mutual TLS is enforced is open. Leading candidate: a managed
+   service mesh (Cloud Service Mesh) with a mesh-wide `STRICT` policy and its built-in
+   certificate authority, which would also issue internal/workload certificates and
+   supersede the private-CA approach in TC-7. Kept open for now.

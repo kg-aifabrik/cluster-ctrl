@@ -39,7 +39,8 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
   **GitHub Actions**; applies are gated by **GitHub Environments**. Approval authority is a
   single **defined list of approved SRE GitHub users** — the same list gates
   infrastructure-change pull requests and staging/production deployments (dev is
-  self-service).
+  self-service). The console authors pull requests as a scoped **GitHub App** (its private
+  key held in Secret Manager — see TC-13), not a person-tied token.
 - **Rationale:** one platform for source of truth, review, pipeline, and approval gating;
   native required-reviewer controls satisfy "no auto-apply". A single named approver list
   is the simplest model that is auditable and meets the need at this scale — a finer
@@ -108,7 +109,10 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
   (Classic Google-managed SSL certs aren't supported on regional/internal load balancers —
   Certificate Manager is the supported route.)
 - **Open:** internal CA tier and trust distribution/rotation; confirm Certificate Manager
-  attachment on the chosen gateway class.
+  attachment on the chosen gateway class. **Also open:** if service-to-service mutual TLS
+  is delivered via a managed service mesh (undecided — see requirements §8 and
+  security-requirements.md SEC-10), the mesh's own certificate authority would issue
+  internal/workload certificates and supersede this private-CA approach for internal TLS.
 
 ## TC-8: Service exposure and DNS
 
@@ -167,14 +171,25 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
   developers fast while protecting higher environments. The gate sits at the registry and
   admission boundaries, so it is uniform regardless of each team's pipeline.
 
-## TC-13: Workload secrets
+## TC-13: Workload and platform secrets
 
-- **Requirement:** WLD-4 — a sanctioned way for workloads to consume secrets.
-- **Considerations:** plain Kubernetes Secrets vs. an external managed secrets service.
-- **Choice:** **Google Secret Manager** surfaced through the **Secrets Store driver**,
-  accessed with **Workload Identity**.
-- **Rationale:** one audited path; secrets are never baked into images or committed;
-  per-workload identity scopes access.
+- **Requirement:** WLD-4, and SEC-9 — a sanctioned way for workloads (and the platform
+  itself) to consume secrets without baking them into images or committing them.
+- **Considerations:** plain Kubernetes Secrets; the **Secrets Store CSI driver** (mounts
+  from a secrets service); the **External Secrets Operator (ESO)** (syncs to a Kubernetes
+  Secret); direct API access from the application.
+- **Choice:** **Google Secret Manager** (encrypted with a customer-managed key) as the
+  store. Workloads consume secrets through the **Secrets Store CSI driver**, mounted at
+  runtime via **Workload Identity** — **no long-lived Kubernetes Secret object by
+  default**. The **External Secrets Operator** is allowed where a synced Kubernetes Secret
+  is genuinely required. Under GitOps, manifests carry only *references* (a
+  `SecretProviderClass` / `ExternalSecret`); the values live in Secret Manager. Platform
+  and automation credentials — the console's **GitHub App** private key and the alerting
+  webhook — are stored in Secret Manager and read via Workload Identity.
+- **Rationale:** mounting (not standing Secret objects) gives the smallest blast radius;
+  per-workload identity scopes access; the customer-managed key matches the cluster
+  secret-encryption standard; nothing secret lands in Git or an image; the driver supports
+  rotation.
 
 ## TC-14: Cost visibility
 
