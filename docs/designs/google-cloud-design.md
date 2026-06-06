@@ -20,65 +20,203 @@ Gateway**. Nodes have no public address and reach Google services over a private
 Secrets and disks are encrypted with our own key. Pods get cloud access through their
 own identity, never the node's. Only signed images from our registry are admitted.
 
-## 3. Entities, by layer
+---
 
-Built bottom-up — each layer depends on the ones above it.
+## 3. Foundation (per environment)
 
-### 3.1 Foundation (per environment)
+### Project
+- One Google Cloud project per environment (dev / stage / prod) — the boundary for
+  isolation, quotas, identity, and cost.
+- Created and owned by the keyless automation identity built in Milestone 0.
 
-| Entity | What it is, and our choice |
-|---|---|
-| **Project** | One per environment — the isolation and cost boundary. Created and owned by the keyless automation identity from Milestone 0. |
-| **Enabled services** | Turn on what the cluster touches: GKE, Compute, **Identity and Access Management (IAM)**, **Key Management Service (KMS)**, Artifact Registry + scanning, Binary Authorization, Fleet + Connect Gateway, Logging, Monitoring. Enabling GKE/Compute is also what creates the Google-managed service agents. |
-| **KMS keyring + key** | One encryption key (a **customer-managed key**), in the cluster's region (no global option), with rotation on. Used for the encryption below. |
-| **Service agents + two key grants** | Google-managed identities. Grant the **GKE agent** use of the key for **secret (etcd) encryption**, and the **Compute agent** use of it for **node and disk encryption** — two grants to two identities; missing either breaks the cluster. |
-| **Node service account** | A dedicated, least-privilege identity for nodes (replacing the broad default): just enough to log, send metrics, and pull images. Pods do **not** use it. |
-| **Workload Identity** | The cluster's identity pool (`<project>.svc.id.goog`); node pools run in metadata mode so each pod gets its own scoped cloud identity. |
+### Enabled services (and why each)
+APIs are off until enabled; we turn on only what the cluster uses. Enabling GKE and
+Compute is also what brings the Google-managed service agents (below) into existence.
+- **container** — the GKE service itself (clusters and node pools).
+- **compute** — the network, subnets, nodes (virtual machines), and disks underneath.
+- **iam** / **iamcredentials** — service accounts and short-lived credentials.
+- **cloudkms** — the encryption key for secrets and disks.
+- **artifactregistry** + **containeranalysis** — store images and scan them.
+- **binaryauthorization** — admit only trusted images.
+- **gkehub** + **gkeconnect** + **connectgateway** — fleet membership and private API access.
+- **logging** + **monitoring** — where logs and metrics go (incl. managed Prometheus).
+- **secretmanager** — workload secrets (technology-choices TC-13).
+- **certificatemanager** / **privateca** — TLS certificates (TC-7).
+- **dns** — private DNS zones so private nodes resolve Google service names.
 
-*Watch out:* service agents don't exist until forced into being — create them before
-granting key access, or the build races. Rotating the key does not re-encrypt existing
-secrets, and destroying an in-use key version makes the cluster unusable.
+### Customer-managed encryption key (CMEK)
+- **What it is** — our own key in **Cloud Key Management Service (KMS)**, used to encrypt
+  the cluster's Kubernetes secrets (in etcd) and the nodes' disks. "Customer-managed"
+  means we, not Google alone, control and audit it.
+- **Requirements** — a symmetric *encrypt/decrypt* key, in a key ring whose **location
+  matches the cluster's region** (there is no global option for this use); automatic
+  rotation enabled.
+- **Created once, then kept** — the key resource is created once and lives for as long as
+  the cluster does. Rotation periodically adds a *new key version* (old data stays
+  readable), so the key changes over time but is never recreated. **Never destroy a key
+  version still in use** — that makes the cluster's secrets unreadable.
+- **How and where** — in Cloud KMS: create a key ring, then the key. Then grant *use* of
+  the key (the "encrypter/decrypter" role) to two Google-managed identities (next), and
+  point the cluster at the key in two places: its secret-encryption setting and its node
+  disk-encryption setting.
 
-### 3.2 Network
+### Service agents and the two key grants
+- Google-managed identities that run parts of the cluster on our behalf. They don't exist
+  until the APIs are enabled — and must be created before we grant them key access, or the
+  build races.
+- **Two separate grants** (a common trap — both are required):
+  - the **GKE service agent** gets use of the key for **secret (etcd) encryption**;
+  - the **Compute service agent** gets use of the key for **node and disk encryption**.
 
-| Entity | What it is, and our choice |
-|---|---|
-| **VPC network** | A custom network (no auto subnets) — we place the cluster deliberately. |
-| **Subnet + two secondary ranges** | One regional subnet with named ranges for **Pods** and **Services** (the cluster is alias-IP / "VPC-native"). The ranges **cannot be changed after creation**, so the IP space is planned once, up front. |
-| **Private Google Access + private DNS** | Lets nodes with no public address reach Google services (registry, APIs) over Google's internal path. |
-| **Cloud NAT** | Added only if workloads need outbound internet; off by default (least exposure). |
-| **Dataplane V2 + default-deny** | The advanced data plane, with a default-deny network policy in every namespace. |
+### Node service account
+- A dedicated, least-privilege identity attached to the nodes, replacing Google's broad
+  default. It can do only what nodes need: write logs and metrics, and pull images.
+- Pods do **not** use it — they get their own identity (below), so this stays minimal.
 
-### 3.3 Cluster and nodes
+### Workload Identity
+- Maps a Kubernetes service account to a Google identity, so each **pod** gets its own
+  scoped cloud access instead of borrowing the node's credentials.
+- Set on the cluster (identity pool `<project>.svc.id.goog`) and on each node pool
+  (metadata mode), so the node's credentials aren't reachable from pods.
 
-| Entity | What it is, and our choice |
-|---|---|
-| **Regional cluster** | Control plane and nodes across three zones (survives one zone loss). The default node pool is removed; pools are managed explicitly. |
-| **Release channel** | On a channel, for automatic, tested control-plane and node upgrades. |
-| **Hardening (built in)** | Verified-boot ("shielded") nodes, **Container-Optimized OS (COS)** nodes, secret encryption with our key, Workload Identity, Dataplane V2 default-deny — clearing the **Center for Internet Security (CIS) Level 2** floor. |
-| **Observability** | System and workload logs and metrics, plus managed Prometheus, on by default. |
-| **Maintenance + ingress** | A set maintenance window; the Gateway interface enabled for ingress (TC-6); deletion protection on. |
-| **Node pools** | A general hardened pool; a **Confidential (memory-encrypting)** pool is an optional per-cluster add, always on-demand (never spot). Autoscaling is deferred. |
+---
 
-### 3.4 Access — no public endpoint
+## 4. Network
 
-| Entity | What it is, and our choice |
-|---|---|
-| **Private nodes + private control plane** | Nodes have no public address. The control plane uses the **DNS-based private endpoint** (the current recommended approach) with external access off — there is no public API endpoint to attack. |
-| **Fleet membership** | The cluster joins a fleet — the prerequisite for Connect Gateway and later fleet features. |
-| **Connect Gateway** | The only way operators and automation reach the cluster's API: by IAM plus in-cluster role-based access control, with no network allow-lists or virtual private network (VPN). |
+### Custom VPC (not auto mode)
+- **Auto mode** makes Google create one subnet per region automatically, with fixed preset
+  ranges. We use **custom mode** instead so we choose every range deliberately — avoiding
+  overlaps with other networks and surprise address space.
 
-### 3.5 Supply chain
+### Subnet and the Pod/Service ranges
+- **A subnet is regional** — it spans every zone in the region. One subnet serves the nodes
+  in all three availability zones; subnets are *not* per-zone.
+- The cluster is **VPC-native** ("alias IP"): the node subnet has its **primary range** (node
+  addresses) plus two **secondary ranges** on the same subnet — one for **Pods**, one for
+  **Services**. Pods and Services are *secondary ranges*, not separate subnets.
+- **Sizing** — GKE gives each node a `/24` (room for ~110 pods), so the Pod range must cover
+  `max nodes × /24` and dominates consumption; the Services range defaults to a `/20`. Pull
+  the Pod range from the `100.64.0.0/10` block (reserved for exactly this) to avoid burning
+  ordinary private address space. All ranges must be non-overlapping. Plan generously now.
+- **Growing later** — the **primary (node) range can be expanded** in place; **extra Pod
+  ranges can be added** to node pools as the cluster grows. The **Services range is fixed at
+  creation** and cannot change — which is why it's sized up front.
+- **Proxy-only subnet?** Not now. That is a separate subnet needed only by *internal* load
+  balancers / internal Gateways (the Envoy proxies that front internal HTTPS endpoints). We
+  add one if and when we expose internal endpoints; the cluster itself doesn't need it.
 
-| Entity | What it is, and our choice |
-|---|---|
-| **Artifact Registry** | One private image repository per project; public base images are mirrored through a proxy repository so the cluster never pulls from the internet directly. The node identity has read-only access. |
-| **Binary Authorization** | An admission policy that admits only trusted images. Starts in **audit** (logs, does not block) and switches to **enforce** once the signing pipeline exists. |
+### Reaching Google services privately
+- **Private Google Access** on the subnet lets nodes with no public address reach Google
+  APIs and Artifact Registry over Google's internal network, with private DNS pointing those
+  names at Google's restricted virtual IP.
 
-## 4. Build order
+### Outbound internet for pods
+- Private nodes have no public address, so a pod that needs the public internet egresses
+  through **Cloud NAT** (a managed network-address-translation service on a Cloud Router),
+  which gives shared outbound IPs. Without Cloud NAT, pods can reach only Google services.
+- It's **off by default** (least exposure) and added only when a workload needs it. Egress is
+  also gated by the namespace's default-deny network policy, so a pod needs *both* the Cloud
+  NAT path *and* an explicit egress allow.
+
+### Dataplane V2 (yes, Cilium)
+- The cluster's data plane is **Dataplane V2**, Google's managed networking built on
+  **Cilium / eBPF** (extended Berkeley Packet Filter — programmable in the Linux kernel). It
+  enforces NetworkPolicy in the kernel and powers network flow logging.
+- We pair it with a **default-deny** network policy in every namespace.
+
+---
+
+## 5. Cluster and nodes
+
+### Regional cluster
+- `location` is a **region**, which gives a control plane replicated across three zones
+  automatically; `node_locations` pins nodes across three zones too — the cluster survives
+  losing one zone.
+
+### Default node pool removed
+- Creating a cluster auto-creates one "default" node pool using Google's default settings
+  (including the broad default identity). We delete it (`remove_default_node_pool`) and
+  create our own pools instead.
+- **Why manage pools explicitly** — every pool then uses *our* hardened settings (our node
+  identity, shielded nodes, Container-Optimized OS, machine type, labels/taints), and pools
+  can be added, resized, or removed independently as day-2 operations.
+
+### Release channel
+- The cluster is enrolled in a **release channel** (Rapid / Regular / Stable). Being on a
+  channel hands version management to Google: it auto-upgrades the control plane and nodes to
+  tested versions at that channel's cadence and auto-repairs unhealthy nodes.
+- **Why** — automatic security patching with vetted stability, and no manual version
+  juggling. We use **Regular** (the balanced default).
+
+### Hardening, built in
+- Verified-boot ("shielded") nodes, **Container-Optimized OS (COS)** nodes (minimal,
+  auto-patched), secret encryption with our key, Workload Identity, and Dataplane V2
+  default-deny — together clearing the **Center for Internet Security (CIS) Level 2** floor.
+
+### Where logs and metrics go
+- **Logs** — system and workload logs flow to **Cloud Logging**.
+- **Metrics** — to **Cloud Monitoring**; we additionally enable **Managed Service for
+  Prometheus**, so Prometheus-format workload metrics are collected and queryable without us
+  running a Prometheus server.
+
+### Maintenance window
+- A recurring time window we define during which GKE may apply automatic
+  upgrades/maintenance — so disruptive changes land at predictable, low-traffic times rather
+  than whenever.
+
+### Ingress (Gateway API) and deletion protection
+- We enable the **GKE Gateway** controller (our chosen ingress, TC-6) on the cluster so that
+  routing of traffic into services can be defined later. Enabling it now costs nothing and
+  avoids a reconfigure.
+- **Deletion protection** is on, guarding against accidental cluster deletion.
+
+### Node pools
+- A **general** hardened pool (machine type, disk, on-demand), plus an optional
+  **Confidential** (memory-encrypting) pool per cluster — always **on-demand**, never spot
+  (spot Confidential nodes proved unreliable). **Autoscaling is deferred.**
+
+---
+
+## 6. Access — no public endpoint
+
+### Private nodes + private control plane
+- Nodes have no public address. The control plane uses the **DNS-based private endpoint**
+  (Google's current recommended approach) with external access turned off — there is **no
+  public API endpoint** to attack or allow-list.
+
+### Fleet membership
+- The cluster joins a **fleet** (a group of clusters). Today this is only the prerequisite
+  for Connect Gateway.
+- **Later fleet features** it unlocks (not used yet): multi-cluster Services and Gateways,
+  fleet-wide configuration and policy management, team scopes for multi-tenancy, Cloud Service
+  Mesh, and fleet-wide observability.
+
+### Connect Gateway
+- The single way operators and automation reach the cluster's Kubernetes interface — by
+  Google **Identity and Access Management (IAM)** plus in-cluster role-based access control,
+  with **no** network allow-lists or virtual private network (VPN).
+
+---
+
+## 7. Supply chain
+
+### Artifact Registry
+- One private image repository per project for our images, plus a proxy repository that
+  mirrors public base images — so the cluster never pulls from the internet directly. The
+  node identity has read-only access.
+
+### Binary Authorization
+- An admission policy that admits only trusted images. It starts in **audit** (logs, does not
+  block) and switches to **enforce** once the image-signing pipeline exists.
+
+*(Image scanning and the daily evidence reports are in [security-requirements.md](../security-requirements.md).)*
+
+---
+
+## 8. Build order
 
 1. Project → enable services → force-create the service agents.
-2. KMS keyring + key → the two key grants.
+2. KMS key ring + key → the two key grants.
 3. Node service account and its roles.
 4. VPC → subnet + secondary ranges → Private Google Access / DNS (Cloud NAT if needed).
 5. Artifact Registry (+ reader grant) and the Binary Authorization policy.
@@ -86,23 +224,24 @@ secrets, and destroying an in-use key version makes the cluster unusable.
 7. Node pools (general; Confidential if requested).
 8. Connect Gateway access (IAM + in-cluster roles).
 
-## 5. Decisions, in brief
+## 9. Decisions, in brief
 
 - **One project per environment** — clean isolation, cost, and blast-radius boundary.
-- **No public control-plane endpoint; DNS-based private endpoint + Connect Gateway** — the recommended modern path; nothing reaches the API over the internet.
+- **No public control-plane endpoint; DNS-based private endpoint + Connect Gateway** — nothing reaches the API over the internet.
 - **Our own key for secrets and disks** — control and auditability; two grants because Google uses two managed identities.
 - **Least-privilege node identity + Workload Identity** — nodes can do little; pods get scoped identities, not node keys.
+- **Custom VPC, generous immutable Pod/Service ranges** — deliberate, non-overlapping addressing planned once.
 - **Regional + release channel** — high availability and automatic patching.
 - **Dataplane V2 default-deny, CIS Level 2** — secure by default.
 - **Images only from our registry; Binary Authorization audit → enforce** — no untrusted images.
 
-## 6. Open items
+## 10. Open items
 
-- **Control-plane endpoint** — confirm the DNS-based endpoint on our GKE version at build (it is the recommended approach, but verify availability).
+- **Control-plane endpoint** — confirm the DNS-based endpoint on our GKE version at build.
 - **Binary Authorization** — the newer check-based policy is still Preview; start with the generally-available project policy.
 - **Service-to-service mutual TLS / service mesh** — still open (requirements §8).
 - **Autoscaling** — deferred.
 
-## 7. Related
+## 11. Related
 
 [requirements.md](../requirements.md) · [technology-choices.md](../technology-choices.md) · [security-requirements.md](../security-requirements.md).
