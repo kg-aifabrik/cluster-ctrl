@@ -51,11 +51,22 @@ iterated. Choices marked **Open** still have a sub-decision to confirm.
 
 - **Requirement:** FND-4 — short-lived, keyless automation credentials, scoped per
   repository and environment.
-- **Considerations:** downloadable service-account keys vs. federated short-lived tokens.
-- **Choice:** **Workload Identity Federation** between GitHub Actions and Google Cloud;
-  **Workload Identity** for in-cluster workloads.
-- **Rationale:** no long-lived keys to leak or rotate; tokens last about an hour and are
-  scoped to the specific identity; per-environment identities contain blast radius.
+- **Considerations:** downloadable service-account keys vs. federated short-lived tokens;
+  direct Workload Identity Federation (roles bound to the repo) vs. service-account
+  impersonation; pinning the OIDC trust on the repository *name* vs. the immutable
+  *repository_id*.
+- **Choice:** **Workload Identity Federation** between GitHub Actions and Google Cloud, via
+  **service-account impersonation** (a least-privilege automation SA per environment);
+  **Workload Identity** for in-cluster workloads. The OIDC provider's attribute condition
+  pins the immutable **`repository_id`** **and** **`ref == refs/heads/main`**, and
+  impersonation is restricted to that `repository_id`.
+- **Rationale:** no long-lived keys to leak or rotate. Impersonation over direct WIF
+  because federated tokens cap at ~10 minutes (too short for real Terraform applies) and a
+  per-environment SA is the identity FND-4 wants. Pinning on `repository_id` is immutable —
+  it survives repo rename/transfer and resists name-reclaim, stronger than the mutable repo
+  name; the `ref` condition limits authentication to the `main` branch.
+- **Implemented:** Milestone 0 in the `iac-gke` repo — `docs/runbooks/01-keyless-access-setup.md`
+  (one-time setup) and `bootstrap/verifier` (the `setup-doctor` that verifies it, FND-2).
 
 ## TC-4: Private cluster access
 
