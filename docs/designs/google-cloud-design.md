@@ -1,6 +1,6 @@
 # Google Cloud design — the hardened GKE cluster
 
-*Status: draft for review · Date: 2026-06-05*
+*Status: draft for review · Date: 2026-06-06*
 *Companion to [requirements.md](../requirements.md) and [technology-choices.md](../technology-choices.md). The security controls and evidence live in [security-requirements.md](../security-requirements.md).*
 
 ---
@@ -101,9 +101,9 @@ Compute is also what brings the Google-managed service agents (below) into exist
 - **Growing later** — the **primary (node) range can be expanded** in place; **extra Pod
   ranges can be added** to node pools as the cluster grows. The **Services range is fixed at
   creation** and cannot change — which is why it's sized up front.
-- **Proxy-only subnet?** Not now. That is a separate subnet needed only by *internal* load
-  balancers / internal Gateways (the Envoy proxies that front internal HTTPS endpoints). We
-  add one if and when we expose internal endpoints; the cluster itself doesn't need it.
+- **Proxy-only subnet** — a separate subnet used only by *internal* load balancers / internal
+  Gateways (the Envoy proxies that front internal HTTPS endpoints). The cluster itself does not
+  need one; we add it if and when we expose internal endpoints.
 
 ### Reaching Google services privately
 - **Private Google Access** on the subnet lets nodes with no public address reach Google
@@ -118,7 +118,7 @@ Compute is also what brings the Google-managed service agents (below) into exist
   also gated by the namespace's default-deny network policy, so a pod needs *both* the Cloud
   NAT path *and* an explicit egress allow.
 
-### Dataplane V2 (yes, Cilium)
+### Dataplane V2 (Cilium)
 - The cluster's data plane is **Dataplane V2**, Google's managed networking built on
   **Cilium / eBPF** (extended Berkeley Packet Filter — programmable in the Linux kernel). It
   enforces NetworkPolicy in the kernel and powers network flow logging.
@@ -141,12 +141,19 @@ Compute is also what brings the Google-managed service agents (below) into exist
   identity, shielded nodes, Container-Optimized OS, machine type, labels/taints), and pools
   can be added, resized, or removed independently as day-2 operations.
 
-### Release channel
-- The cluster is enrolled in a **release channel** (Rapid / Regular / Stable). Being on a
-  channel hands version management to Google: it auto-upgrades the control plane and nodes to
-  tested versions at that channel's cadence and auto-repairs unhealthy nodes.
-- **Why** — automatic security patching with vetted stability, and no manual version
-  juggling. We use **Regular** (the balanced default).
+### Versions and upgrades (per environment)
+- **Dev** — enrolled in a **release channel** (Regular, the balanced one). Google auto-upgrades
+  the control plane and nodes to tested versions during the maintenance window and auto-repairs
+  nodes. Low stakes, and it surfaces version issues early.
+- **Staging and production** — upgrades are **deliberate, scheduled Day-2 operations, never
+  automatic**: surprise upgrades risk developer productivity (staging) and customer impact
+  (production). Automatic upgrades are held off (maintenance exclusions) and each upgrade is
+  triggered on a planned schedule through the normal reviewed-change path.
+- **Validate first** — before upgrading staging or production, we build a throwaway **test
+  cluster** on the new version with the same automation, confirm our workloads run correctly,
+  then upgrade staging, then production.
+- The build recipe is identical across environments; the upgrade cadence is an environment
+  parameter, not a different cluster.
 
 ### Hardening, built in
 - Verified-boot ("shielded") nodes, **Container-Optimized OS (COS)** nodes (minimal,
@@ -159,16 +166,18 @@ Compute is also what brings the Google-managed service agents (below) into exist
   Prometheus**, so Prometheus-format workload metrics are collected and queryable without us
   running a Prometheus server.
 
-### Maintenance window
-- A recurring time window we define during which GKE may apply automatic
-  upgrades/maintenance — so disruptive changes land at predictable, low-traffic times rather
-  than whenever.
+### Maintenance window (dev)
+- A recurring window we define on the **dev** cluster for GKE's automatic upgrades, so they land
+  at a predictable, low-traffic time. Staging and production have no automatic upgrades, so they
+  use no window — their timing is set by the scheduled Day-2 upgrade operation.
 
-### Ingress (Gateway API) and deletion protection
-- We enable the **GKE Gateway** controller (our chosen ingress, TC-6) on the cluster so that
-  routing of traffic into services can be defined later. Enabling it now costs nothing and
-  avoids a reconfigure.
-- **Deletion protection** is on, guarding against accidental cluster deletion.
+### Ingress (Gateway API)
+- We enable the **GKE Gateway** controller (our chosen ingress, TC-6) on the cluster so routing
+  of traffic into services can be defined later. Enabling it now costs nothing and avoids a
+  reconfigure.
+
+### Deletion protection
+- On for every cluster, guarding against accidental deletion.
 
 ### Node pools
 - A **general** hardened pool (machine type, disk, on-demand), plus an optional
@@ -231,7 +240,7 @@ Compute is also what brings the Google-managed service agents (below) into exist
 - **Our own key for secrets and disks** — control and auditability; two grants because Google uses two managed identities.
 - **Least-privilege node identity + Workload Identity** — nodes can do little; pods get scoped identities, not node keys.
 - **Custom VPC, generous immutable Pod/Service ranges** — deliberate, non-overlapping addressing planned once.
-- **Regional + release channel** — high availability and automatic patching.
+- **Regional everywhere; upgrades by environment** — dev auto-upgrades on a release channel; staging and production upgrade deliberately via scheduled Day-2 operations, validated on a test cluster first.
 - **Dataplane V2 default-deny, CIS Level 2** — secure by default.
 - **Images only from our registry; Binary Authorization audit → enforce** — no untrusted images.
 
@@ -239,6 +248,7 @@ Compute is also what brings the Google-managed service agents (below) into exist
 
 - **Control-plane endpoint** — confirm the DNS-based endpoint on our GKE version at build.
 - **Binary Authorization** — the newer check-based policy is still Preview; start with the generally-available project policy.
+- **Staging/production upgrade mechanism** — keep them on a channel with automatic upgrades suppressed (maintenance exclusions), or pin a specific version; settle at build.
 - **Service-to-service mutual TLS / service mesh** — still open (requirements §8).
 - **Autoscaling** — deferred.
 
